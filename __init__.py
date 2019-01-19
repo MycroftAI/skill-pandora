@@ -538,6 +538,7 @@ class PianobarSkill(CommonPlaySkill):
         if self.piano_bar_state and not self.piano_bar_state == "paused":
             self.handle_pause()
             self.enclosure.mouth_reset()
+            self.shutdown()
             return True
 
     @intent_handler(IntentBuilder("").require("Pandora").
@@ -563,6 +564,8 @@ class PianobarSkill(CommonPlaySkill):
 
         if self.process:
             self.cmd("q")
+        subprocess.call(["killall", "-9", "pianobar"])
+        time.sleep(1)
         super(PianobarSkill, self).shutdown()
 
 
