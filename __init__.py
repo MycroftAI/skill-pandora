@@ -20,10 +20,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import sys
 import subprocess
 import json
 import time
+import requests
 from os import makedirs, remove, listdir, path
 from os.path import dirname, join, exists, expanduser, isfile, abspath, isdir
 import shutil
@@ -36,6 +36,28 @@ from mycroft.audio import wait_while_speaking
 from mycroft.messagebus.message import Message
 
 from mycroft.skills.common_play_skill import CommonPlaySkill, CPSMatchLevel
+
+
+homepage_url = 'https://www.pandora.com'
+login_url = 'https://www.pandora.com/api/v1/auth/login'
+
+
+def get_pandora_login_token():
+    """A login token must be fetched from the website before logging in"""
+    r = requests.get(homepage_url)
+    cookies = r.headers['Set-Cookie']
+    token = cookies.split('csrftoken=')[-1].split(';')[0]
+    return token
+
+
+def get_pandora_user_info(username, password):
+    """Return pandora user info directly from the website"""
+    token = get_pandora_login_token()
+    headers = {'Cookie': 'csrftoken=' + token, 'X-CsrfToken': token}
+    data = {'username': username, 'password': password}
+    r = requests.post(login_url, json=data, headers=headers)
+    return r.json() if r.status_code == 200 else None
+
 
 class PianobarSkill(CommonPlaySkill):
     def __init__(self):
@@ -96,7 +118,7 @@ class PianobarSkill(CommonPlaySkill):
             # User has setup Pandora on their account and said Pandora,
             # so is likely trying to start Pandora, e.g.
             # "play pandora" or "play some music on pandora"
-            return ("pandora", CPSMatchLevel.CATEGORY)
+            return ("pandora", CPSMatchLevel.MULTI_KEY)
 
     def CPS_start(self, phrase, data):
         # Use the "latest news" intent handler
@@ -264,6 +286,17 @@ class PianobarSkill(CommonPlaySkill):
         self.process.stdin.write(s.encode())
         self.process.stdin.flush()
 
+    def troubleshoot_auth_error(self):
+        user_info = get_pandora_user_info(self.settings['email'],
+                                          self.settings['password'])
+        if user_info:
+            if user_info.get('stationCount') == 0:
+                self.speak_dialog('no.stations')
+            else:
+                self.speak_dialog('pandora.error')
+        else:
+            self.speak_dialog('wrong.credentials')
+
     def _init_pianobar(self):
         if self.settings.get('first_init') is False:
             return
@@ -285,7 +318,7 @@ class PianobarSkill(CommonPlaySkill):
             self._load_current_info()
         except Exception as e:
             LOG.exception('Failed to connect to Pandora: '+repr(e))
-            self.speak_dialog('wrong.credentials')
+            self.troubleshoot_auth_error()
 
         self.process = None
 
@@ -301,22 +334,21 @@ class PianobarSkill(CommonPlaySkill):
         if isdir(info_path):
             shutil.rmtree(info_path)
 
-        if not exists(info_path):
-            with open(info_path, 'w+'):
-                pass
-
-        with open(info_path, 'r') as f:
-            info = json.load(f)
+        try:
+            with open(info_path, 'r') as f:
+                info = json.load(f)
+        except:
+            info = {}
 
         # Save the song info for later display
-        self.settings["song_artist"] = info["artist"]
-        self.settings["song_title"] = info["title"]
-        self.settings["song_album"] = info["album"]
+        self.settings["song_artist"] = info.get("artist", "")
+        self.settings["song_title"] = info.get("title", "")
+        self.settings["song_album"] = info.get("album", "")
 
-        self.settings["station_name"] = info["stationName"]
+        self.settings["station_name"] = info.get("stationName", "")
         if self.debug_mode:
             LOG.info("Station name: " + str(self.settings['station_name']))
-        self.settings["station_count"] = int(info["stationCount"])
+        self.settings["station_count"] = int(info.get("stationCount", 0))
         self.settings["stations"] = []
         for index in range(self.settings["station_count"]):
             station = "station" + str(index)
@@ -325,6 +357,12 @@ class PianobarSkill(CommonPlaySkill):
         if self.debug_mode:
             LOG.info("Stations: "+str(self.settings["stations"]))
         # self.settings.store()
+
+    def _process_valid(self):
+        if self.process and self.process.poll() == None:
+            return True  # process is running
+        else:
+            return False
 
     def _launch_pianobar_process(self):
         try:
@@ -344,12 +382,15 @@ class PianobarSkill(CommonPlaySkill):
             self.cmd("0\n")
             self.handle_pause()
             time.sleep(2)
-            self._load_current_info()
-            LOG.info("Pianobar process initialized")
+            if self._process_valid():
+                self._load_current_info()
+                LOG.info("Pianobar process initialized")
+                return
         except Exception:
             LOG.exception('Failed to connect to Pandora')
-            self.speak_dialog('wrong.credentials')
-            self.process = None
+
+        self.troubleshoot_auth_error()
+        self.process = None
 
     def _extract_station(self, utterance):
         """
@@ -364,17 +405,13 @@ class PianobarSkill(CommonPlaySkill):
                                             match confidence, or None
         """
         try:
-            # TODO: Internationalize
+            # Strip out verbal command words.  For example,
+            # "play tom waits on pandora" becomes "tom waits"
 
-            common_words = [" to ", " on ", " pandora", " play"]
             for vocab in self.vocabs:
                 utterance = utterance.replace(vocab, "")
+            utterance = ' '.join(utterance.split())  # eliminate extra spaces
 
-            # strip out other non important words
-            for words in common_words:
-                utterance = utterance.replace(words, "")
-
-            utterance.lstrip()
             stations = [station[0] for station in self.settings["stations"]]
             probabilities = fuzz_process.extractOne(
                 utterance, stations, scorer=fuzz.ratio)
