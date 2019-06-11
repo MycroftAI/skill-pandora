@@ -536,7 +536,7 @@ class PianobarSkill(CommonPlaySkill):
         if self._is_setup:
             # Examine the whole utterance to see if the user requested a
             # station by name
-            station = self._extract_station(message.data["utterance"])
+            station, conf = self._extract_station(message.data["utterance"])
 
             if station is not None:
                 self._play_station(station)
