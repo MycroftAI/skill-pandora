@@ -1,0 +1,10 @@
+dependencies:
+  system:
+    all: pianobar piano-dev
+    apt-get: pianobar libpiano-dev  
+
+  exes:
+    - pianobar
+
+  python:
+    - fuzzywuzzy==0.18
